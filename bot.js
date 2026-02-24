@@ -3,7 +3,6 @@ import express from "express";
 import fetch from "node-fetch";
 
 const SERVER = "play.6b6t.org";
-const BOT_NAME = "sudobot";
 const LOGIN_DELAY_MS = 3500;
 const PORTAL_WALK_MS = 3500;
 const BETWEEN_PORTALS_DELAY_MS = 6000;
@@ -11,6 +10,8 @@ const RECONNECT_DELAY_MS = 30000;
 const AFK_INTERVAL_MS = 30000;
 const PSI_TIMEOUT_MS = 20000;
 
+
+const BOT_NAME = process.env.BOT_NAME;
 const PSI09_API_URL = process.env.PSI09_API_URL;
 const BOT_PASSWORD = process.env.BOT_PASSWORD;
 const HTTP_PORT = process.env.PORT || 3000;
