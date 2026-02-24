@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: sudobot-6b6t
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    autoDeploy: true
+    envVars:
+      - key: PSI09_API_URL
+        sync: false
+      - key: BOT_PASSWORD
+        sync: false
