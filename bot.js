@@ -2,7 +2,7 @@ import mineflayer from "mineflayer";
 import express from "express";
 import fetch from "node-fetch";
 
-const SERVER = "play.6b6t.org";
+const SERVER = "alt3.6b6t.org";
 const LOGIN_DELAY_MS = 3500;
 const PORTAL_WALK_MS = 3500;
 const BETWEEN_PORTALS_DELAY_MS = 6000;
@@ -84,7 +84,7 @@ function createBot() {
   bot = mineflayer.createBot({
     host: SERVER,
     username: BOT_NAME,
-    version: false,
+    version: "1.21.8",
     auth: "offline" // cracked server
   });
 
