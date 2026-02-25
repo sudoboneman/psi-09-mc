@@ -1,6 +1,6 @@
 /* PSI-09 Minecraft Client
    Server: 6b6t.org
-   Version: 1.21.1
+   Version: 1.21.10
    Fix: "Coordinate Lock" - Stops based on XYZ math, ignoring chunk lag.
 */
 
@@ -13,7 +13,7 @@ const CONFIG = {
     host: 'alt.6b6t.org', 
     username: process.env.MC_USERNAME, // Now loads from .env
     auth: 'offline',        
-    version: '1.21.1',
+    version: '1.21.10',
     mcPassword: process.env.MC_PASSWORD || 'your_secure_password',
     engineUrl: process.env.ENGINE_URL, // Now loads from .env
     viewPort: 3007
