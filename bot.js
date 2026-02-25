@@ -10,12 +10,12 @@ const axios = require('axios')
 require('dotenv').config()
 
 const CONFIG = {
-    host: 'alt3.6b6t.org', 
-    username: 'sov1962', 
+    host: 'alt.6b6t.org', 
+    username: process.env.MC_USERNAME, // Now loads from .env
     auth: 'offline',        
     version: '1.21.1',
     mcPassword: process.env.MC_PASSWORD || 'your_secure_password',
-    engineUrl: 'https://convo-core.onrender.com/psi09',
+    engineUrl: process.env.ENGINE_URL, // Now loads from .env
     viewPort: 3007
 }
 
@@ -29,7 +29,13 @@ function createBot() {
     let isReconnecting = false
     let lastPosition = null
 
-    console.log(`[Init] Connecting to ${CONFIG.host}...`)
+    // Check if env vars are loaded to prevent crashing
+    if (!CONFIG.username || !CONFIG.engineUrl) {
+        console.error('Error: MC_USERNAME or ENGINE_URL is missing from .env file')
+        process.exit(1)
+    }
+
+    console.log(`[Init] Connecting to ${CONFIG.host} as ${CONFIG.username}...`)
 
     bot = mineflayer.createBot({
         host: CONFIG.host,
