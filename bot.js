@@ -1,166 +1,191 @@
-import mineflayer from "mineflayer";
-import express from "express";
-import fetch from "node-fetch";
+/* PSI-09 Minecraft Client
+   Server: 6b6t.org
+   Version: 1.21.1
+   Fix: "Coordinate Lock" - Stops based on XYZ math, ignoring chunk lag.
+*/
 
-const SERVER = "alt3.6b6t.org";
-const LOGIN_DELAY_MS = 3500;
-const PORTAL_WALK_MS = 3500;
-const BETWEEN_PORTALS_DELAY_MS = 6000;
-const RECONNECT_DELAY_MS = 30000;
-const AFK_INTERVAL_MS = 30000;
-const PSI_TIMEOUT_MS = 20000;
+const mineflayer = require('mineflayer')
+const { mineflayer: mineflayerViewer } = require('prismarine-viewer')
+const axios = require('axios')
+require('dotenv').config()
 
-
-const BOT_NAME = process.env.BOT_NAME;
-const PSI09_API_URL = process.env.PSI09_API_URL;
-const BOT_PASSWORD = process.env.BOT_PASSWORD;
-const HTTP_PORT = process.env.PORT || 3000;
-
-if (!PSI09_API_URL || !BOT_PASSWORD) {
-  console.error("Missing env vars: PSI09_API_URL or BOT_PASSWORD");
-  process.exit(1);
+const CONFIG = {
+    host: 'alt3.6b6t.org', 
+    username: 'sov1962', 
+    auth: 'offline',        
+    version: '1.21.1',
+    mcPassword: process.env.MC_PASSWORD || 'your_secure_password',
+    engineUrl: 'https://convo-core.onrender.com/psi09',
+    viewPort: 3007
 }
 
-let bot;
-let reconnectTimer = null;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
-// -------------------- HTTP keep-alive --------------------
-const app = express();
-app.get("/health", (_req, res) => res.send("ok"));
-app.listen(HTTP_PORT, () => {
-  console.log(`[HTTP] Keep-alive listening on ${HTTP_PORT}`);
-});
+let bot
 
-// -------------------- Helpers --------------------
-function sleep(ms) {
-  return new Promise(r => setTimeout(r, ms));
-}
-
-async function walkForward(ms) {
-  if (!bot?.entity) return;
-  bot.setControlState("forward", true);
-  await sleep(ms);
-  bot.setControlState("forward", false);
-}
-
-// Per-player cooldown (anti-spam / API protection)
-const lastMsg = new Map();
-function canReply(player) {
-  const now = Date.now();
-  const last = lastMsg.get(player) || 0;
-  if (now - last < 5000) return false; // 5 seconds
-  lastMsg.set(player, now);
-  return true;
-}
-
-// -------------------- PSI-09 call with timeout --------------------
-async function callPsi09(sender, content) {
-  const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), PSI_TIMEOUT_MS);
-
-  try {
-    const res = await fetch(PSI09_API_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        message: content,
-        sender_id: sender,
-        username: sender
-      }),
-      signal: controller.signal
-    });
-
-    const data = await res.json();
-    return (data.reply || "…").toString();
-  } finally {
-    clearTimeout(t);
-  }
-}
-
-// -------------------- Bot lifecycle --------------------
 function createBot() {
-  console.log("[BOT] Connecting…");
+    let hasLoggedIn = false
+    let isActive = false
+    let isReconnecting = false
+    let lastPosition = null
 
-  bot = mineflayer.createBot({
-    host: SERVER,
-    username: BOT_NAME,
-    version: "1.21.8",
-    auth: "offline" // cracked server
-  });
+    console.log(`[Init] Connecting to ${CONFIG.host}...`)
 
-  bot.once("spawn", async () => {
-    console.log("[BOT] Spawned, logging in…");
-    await sleep(LOGIN_DELAY_MS);
-    bot.chat(`/login ${BOT_PASSWORD}`);
+    bot = mineflayer.createBot({
+        host: CONFIG.host,
+        username: CONFIG.username,
+        auth: CONFIG.auth,
+        version: CONFIG.version,
+        hideErrors: false,
+        checkTimeoutInterval: 120 * 1000,
+        viewDistance: 'tiny' 
+    })
 
-    // Walk into portal 1, then portal 2
-    await sleep(4000);
-    await walkForward(PORTAL_WALK_MS);
-    await sleep(BETWEEN_PORTALS_DELAY_MS);
-    await walkForward(PORTAL_WALK_MS);
+    // --- VISUALS ---
+    bot.once('spawn', () => {
+        try {
+            mineflayerViewer(bot, { port: CONFIG.viewPort, firstPerson: true, viewDistance: 3 })
+            console.log(`[Visuals] http://localhost:${CONFIG.viewPort}`)
+        } catch (e) {}
+    })
 
-    console.log("[BOT] Portal sequence done");
-  });
+    bot.on('spawn', async () => {
+        const pos = bot.entity.position
+        if (!lastPosition) lastPosition = pos.clone()
 
-  // -------------------- DM listener --------------------
-  bot.on("messagestr", async (msg) => {
-    // Example: "_greg05 whispers: hello"
-    const m = msg.match(/^([A-Za-z0-9_]+)\s+whispers:\s+(.+)$/i);
-    if (!m) return;
+        if (!hasLoggedIn) {
+            console.log(`[Spawn] Landed at ${Math.floor(pos.x)}, ${Math.floor(pos.z)}`)
+            await sleep(2000) 
+            
+            console.log('[Login] Authenticating...')
+            bot.chat(`/login ${CONFIG.mcPassword}`)
+            hasLoggedIn = true
+            
+            // Failsafe: Check if already at Limbo
+            if (Math.abs(pos.z + 999) < 20) {
+                 console.log('[Spawn] Already at Limbo. Executing move...')
+                 performLimboLock()
+            } else {
+                 waitForTeleport('Limbo', performLimboLock)
+            }
+        }
+    })
 
-    const sender = m[1];
-    const content = m[2];
+    function waitForTeleport(destinationName, nextAction) {
+        console.log(`[${destinationName}] Waiting for teleport...`)
+        const checkInterval = setInterval(async () => {
+            if (!bot || !bot.entity) { clearInterval(checkInterval); return; }
 
-    if (sender.toLowerCase() === BOT_NAME.toLowerCase()) return;
-    if (!canReply(sender)) return;
+            const currentPos = bot.entity.position
+            const distance = currentPos.distanceTo(lastPosition)
 
-    console.log(`[DM] ${sender}: ${content}`);
-
-    try {
-      const reply = await callPsi09(sender, content);
-
-      // Minecraft hard limit ~256 chars; be safe
-      const safeReply = reply.replace(/\s+/g, " ").trim().slice(0, 240);
-      bot.chat(`/msg ${sender} ${safeReply || "…"}`);
-    } catch (err) {
-      console.error("[PSI-09] error:", err.message);
-      bot.chat(`/msg ${sender} brain lag, try again`);
+            if (distance > 500) {
+                clearInterval(checkInterval)
+                console.log(`[${destinationName}] TELEPORT CONFIRMED!`)
+                lastPosition = currentPos.clone()
+                bot.clearControlStates()
+                
+                // Wait for physics to settle
+                console.log(`[${destinationName}] Stabilizing (3s)...`)
+                await sleep(3000) 
+                
+                nextAction()
+            } else {
+                if (distance < 20) lastPosition = currentPos.clone()
+            }
+        }, 200)
     }
-  });
 
-  // -------------------- AFK prevention --------------------
-  const afkTimer = setInterval(() => {
-    if (!bot?.entity) return;
-    bot.setControlState("jump", true);
-    setTimeout(() => bot.setControlState("jump", false), 200);
-  }, AFK_INTERVAL_MS);
+    // --- COORDINATE LOCK NAVIGATION ---
 
-  // -------------------- Reconnect logic --------------------
-  function scheduleReconnect(reason) {
-    if (reconnectTimer) return;
-    console.log(`[BOT] Disconnected (${reason}), reconnecting in ${RECONNECT_DELAY_MS / 1000}s…`);
-    clearInterval(afkTimer);
+    async function performLimboLock() {
+        // LIMBO DATA:
+        // Spawn: -999.5
+        // Portal Entry: -997.5
+        // Kick Zone: > -997.0
+        // SAFE STOP: -998.0
+        
+        console.log('[Limbo] Walking (Headless)... Monitor: Z > -998.0')
+        bot.setControlState('forward', true)
+        bot.setControlState('sprint', false)
 
-    reconnectTimer = setTimeout(() => {
-      reconnectTimer = null;
-      createBot();
-    }, RECONNECT_DELAY_MS);
-  }
+        const monitor = setInterval(() => {
+            const z = bot.entity.position.z
+            
+            // We are moving Positive Z (-999 -> -997)
+            // Stop BEFORE we hit -997.0
+            if (z > -998.0) { 
+                clearInterval(monitor)
+                bot.clearControlStates() // CUT ENGINE
+                console.log(`[Limbo] HARD STOP at Z=${z.toFixed(3)} (Safe Zone)`)
+                waitForTeleport('Lobby', performLobbyLock)
+            }
+        }, 10) // High-speed check (10ms)
+    }
 
-  bot.on("end", () => scheduleReconnect("end"));
-  bot.on("kicked", (r) => scheduleReconnect(`kicked: ${r}`));
-  bot.on("error", (err) => {
-    console.error("[BOT] error:", err.message);
-  });
+    async function performLobbyLock() {
+        // LOBBY DATA:
+        // Spawn: 4.6
+        // Portal Entry: 1.5
+        // Kick Zone: < 1.0
+        // SAFE STOP: 2.0
+        
+        console.log('[Lobby] Walking (Headless)... Monitor: Z < 2.0')
+        bot.setControlState('forward', true)
+        bot.setControlState('sprint', false)
+
+        const monitor = setInterval(() => {
+            const z = bot.entity.position.z
+            
+            // We are moving Negative Z (4.6 -> 1.5)
+            // Stop BEFORE we hit 1.0
+            if (z < 2.0) {
+                clearInterval(monitor)
+                bot.clearControlStates() // CUT ENGINE
+                console.log(`[Lobby] HARD STOP at Z=${z.toFixed(3)} (Safe Zone)`)
+                
+                // Wait for world load
+                setTimeout(() => {
+                    console.log('[Main] Bot is now ACTIVE.')
+                    isActive = true
+                }, 10000)
+            }
+        }, 10)
+    }
+
+    // --- CHAT ---
+
+    bot.on('kicked', (reason) => console.log('--- KICKED ---', reason))
+    bot.on('end', () => {
+        if (isReconnecting) return
+        isReconnecting = true
+        console.log(`--- DISCONNECTED ---`)
+        setTimeout(createBot, 30000)
+    })
+    
+    bot.on('message', async (jsonMsg) => {
+        if (!isActive) return 
+        const messageContent = jsonMsg.toString()
+        console.log(`[Chat] ${messageContent}`)
+        
+        const match = messageContent.match(/^(\w+) whispers: (.*)$/)
+        if (match) {
+            const [_, sender, content] = match
+            if (sender === CONFIG.username) return
+            try {
+                const response = await axios.post(CONFIG.engineUrl, {
+                    message: content,
+                    sender_id: sender,      
+                    username: sender,
+                    display_name: sender,
+                    group_name: "6b6t_DM"
+                })
+                if (response.data.reply) {
+                    setTimeout(() => bot.chat(`/msg ${sender} ${response.data.reply}`), 2000)
+                }
+            } catch (e) { }
+        }
+    })
 }
 
-// -------------------- Start --------------------
-createBot();
-
-// Safety: restart on hard crashes
-process.on("uncaughtException", (e) => {
-  console.error("[FATAL] uncaughtException:", e);
-});
-process.on("unhandledRejection", (e) => {
-  console.error("[FATAL] unhandledRejection:", e);
-});
+createBot()
